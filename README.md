@@ -11,8 +11,8 @@ containers in your cluster.
 
 After logging into the OpenShift cluster you can run:
 
-   $ oc-get-upstream-sources all
-   …
+    $ oc-get-upstream-sources all
+    …
 
 In order to fetch all the upstream source informations for all container images
 currently being used on the cluster - if the container is providing this information.
