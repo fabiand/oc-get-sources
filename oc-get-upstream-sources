@@ -1,0 +1,27 @@
+set -e
+
+_imageids() {
+  oc get pods -o json -A | jq -er '.items[] | if .status.containerStatuses then .status.containerStatuses[] | select(.imageID | contains("registry.redhat.io")) | .imageID else "" end' | sort -u
+}
+
+_upstream_vcs_info() {
+  local IMAGEID=$1
+  skopeo inspect "docker://$IMAGEID" | jq -e '
+  {
+    imageID: .Name, 
+    "upstream-vcs-type": (.Labels["upstream-vcs-type"] // "git"),
+    "upstream-vcs-url": (.Labels["upstream-vcs-url"] // .Labels["io.openshift.build.source-location"]),
+    "upstream-vcs-tag": .Labels["upstream-version"],
+    "upstream-vcs-ref": (.Labels["upstream-vcs-ref"] // .Labels["io.openshift.build.commit.id"])
+  }' | tee .cache.d/"${IMAGEID//\//_}.json"
+}
+
+_all_infos() {
+  _imageids | xargs -P 42 -L 1 -- bash $PWD/$0 one $IMAGEID
+  cat .cache.d/*.json | jq -s
+}
+
+one() { _upstream_vcs_info $1 ; }
+all() { _all_infos ; }
+
+${@:-all}
