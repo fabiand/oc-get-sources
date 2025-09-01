@@ -1,0 +1,33 @@
+set -e
+
+#
+# Create a token here: https://access.redhat.com/terms-based-registry/
+# Then do podman login: docker login -u='$TOKEN_NAME' -p=$TOKEN_VALUE
+#
+
+imageids() {
+  oc get pods -o json -A | jq -er '.items[] | if .status.containerStatuses then .status.containerStatuses[] | .imageID else "" end' | sort -u | grep "registry.redhat.io"
+}
+
+upstream_vcs_info() {
+  local IMAGEID=$1
+  skopeo inspect "docker://$IMAGEID" | jq -e '
+  {
+    imageID: .Name, 
+    "upstream-vcs-type": (.Labels["upstream-vcs-type"] // "git"),
+    "upstream-vcs-url": (.Labels["upstream-vcs-url"] // .Labels["io.openshift.build.source-location"]),
+    "upstream-vcs-tag": .Labels["upstream-version"],
+    "upstream-vcs-ref": (.Labels["upstream-vcs-ref"] // .Labels["io.openshift.build.commit.id"])
+  }'
+}
+
+all_infos() {
+
+  for IMAGEID in $(imageids);
+  do
+    upstream_vcs_info $IMAGEID
+  done #| jq -es
+
+  }
+
+all_infos
