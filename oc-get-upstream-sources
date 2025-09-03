@@ -1,10 +1,14 @@
 set -e
 
+_ensure_cache_dir() {
+  mkdir -p .cache.d
+}
+
 _imageids() {
   oc get pods -o json -A | jq -er '.items[] | if .status.containerStatuses then .status.containerStatuses[] | select(.imageID | contains("registry.redhat.io")) | .imageID else "" end' | sort -u
 }
 
-_upstream_vcs_info() {
+_upstream_vcs_info_labels() {
   local IMAGEID=$1
   skopeo inspect "docker://$IMAGEID" | jq -e '
   {
@@ -12,8 +16,45 @@ _upstream_vcs_info() {
     "upstream-vcs-type": (.Labels["upstream-vcs-type"] // "git"),
     "upstream-vcs-url": (.Labels["upstream-vcs-url"] // .Labels["io.openshift.build.source-location"]),
     "upstream-vcs-tag": .Labels["upstream-version"],
-    "upstream-vcs-ref": (.Labels["upstream-vcs-ref"] // .Labels["io.openshift.build.commit.id"])
+    "upstream-vcs-ref": (.Labels["upstream-vcs-ref"] // .Labels["io.openshift.build.commit.id"]),
+    "source": "labels",
   }' | tee .cache.d/"${IMAGEID//\//_}.json"
+}
+
+_upstream_vcs_info_attestation() {
+  local IMAGEID=$1
+  cosign download attestation $IMAGEID | jq -e --arg imageID "$IMAGEID" '
+  .payload | @base64d | fromjson | .predicate.buildConfig.tasks[0].invocation.environment.annotations |
+   {
+    imageID: $imageID,
+    "upstream-vcs-type": (."pipelinesascode.tekton.dev/git-provider"),
+    "upstream-vcs-url": (."pipelinesascode.tekton.dev/repo-url"),
+    "upstream-vcs-branch": (."pipelinesascode.tekton.dev/branch"),
+    "upstream-vcs-ref": (."pipelinesascode.tekton.dev/sha"),
+    "source": "attestation",
+  }' | tee .cache.d/"${IMAGEID//\//_}.json"
+}
+
+_upstream_vcs_info_combined() {
+  local IMAGEID=$1
+  local CACHE_FILE=".cache.d/${IMAGEID//\//_}.json"
+  
+  # Try labels-based approach first
+  _upstream_vcs_info_labels "$IMAGEID" 2>/dev/null || true
+  
+  # Check if we got valid upstream-vcs-url and upstream-vcs-ref
+  if [[ -f "$CACHE_FILE" ]]; then
+    local vcsurl=$(jq -r '."upstream-vcs-url" // empty' "$CACHE_FILE")
+    local vcsref=$(jq -r '."upstream-vcs-ref" // empty' "$CACHE_FILE")
+    
+    # If either is null/empty, try attestation fallback
+    if [[ -z "$vcsurl" || "$vcsurl" == "null" || -z "$vcsref" || "$vcsref" == "null" ]]; then
+      _upstream_vcs_info_attestation "$IMAGEID" 2>/dev/null || true
+    fi
+  else
+    # If label approach failed completely, try attestation
+    _upstream_vcs_info_attestation "$IMAGEID" 2>/dev/null || true
+  fi
 }
 
 _all_infos() {
@@ -21,7 +62,7 @@ _all_infos() {
   cat .cache.d/*.json | jq -s
 }
 
-one() { _upstream_vcs_info $1 ; }
+one() { _ensure_cache_dir ; _upstream_vcs_info_combined $1 ; }
 all() { _all_infos ; }
 
 ${@:-all}
